@@ -1,0 +1,6 @@
+python-docx
+numpy
+pandas
+igraph
+textdistance
+matplotlib
