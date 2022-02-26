@@ -1,0 +1,6 @@
+# ignore all tests
+test*.*
+__pycache__
+.ipynb_checkpoints
+*.png
+*.docx
