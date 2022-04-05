@@ -1,5 +1,6 @@
 from docx import Document
 from docx.shared import Inches
+import docx
 
 import numpy as np
 import pandas as pd
@@ -8,6 +9,19 @@ import matplotlib.pyplot as plt
 import textdistance
 import statistics 
 import igraph
+
+import os
+
+import time
+import json
+import datetime
+
+def dateTwitter2Timestamp(date):
+    """Take date with format ddd mmm dd HH:MM:SS +0000 yyyy 
+    and return 
+    """
+    month={"Jan":"01", "Feb":"02","Mar":"03", "Apr":"04", "May":"05", "Jun":"06", "Jul":"07", "Aug":"08", "Sep":"09", "Oct":"10", "Nov":"11", "Dec":"12"}
+    return datetime.datetime.fromisoformat(date[-4:]+"-"+month[date[4:7]]+"-"+date[8:10]+"T"+date[11:19]).timestamp()
 
 def processSentence(sentence:str)->str:
     """
@@ -85,6 +99,64 @@ def similarityBetween(target_account_description:str, follower_description:str, 
     elif(type_=="levenshtein"):
         return textdistance.levenshtein.similarity(target_account_description, follower_description) #distance #levenshtein #mlipns
 
+def writeDoc(file_name, file_content, previusDoc=False, deg_title=0):
+    """title and text_1 are required, img and text_2 not. text_* can be a str, a dict {"text":'', "type":["bold", "italic"]} or a list of string to make bullet list. 
+
+    :param str file_name: name of the doc (.docx)
+    :param list file_content: [{"title":"",
+                                "text_1":"",
+                                "img":"",
+                                "text_2":""},
+                                [{"title":...}]]
+    :param bool previusDoc: if previusDoc is True, the fonction continue the document, always False for user
+    :param int deg_title: always 0 for user
+    """
+    
+    if previusDoc:
+        document = docx.Document(file_name)
+    else:
+        document = docx.Document()
+    document.save(file_name)
+    for content in file_content:
+        if(type(content)==list):
+            writeDoc(file_name, content, previusDoc=True, deg_title=deg_title+1)
+            
+        else: #(type(content)==dict):
+            document = docx.Document(file_name)
+
+            document.add_heading(content["title"], deg_title)
+            
+            if(type(content["text_1"])==dict):
+                p = document.add_paragraph("")
+                if("italic" in content["text_1"]["type"]):
+                    p.add_run(content["text_1"]["text"]).italic = True
+                if("bold" in content["text_1"]["type"]):
+                    p.add_run(content["text_1"]["text"]).bold = True
+            elif(type(content["text_1"])==list):
+                for t in content["text_1"]:
+                    p=document.add_paragraph(t, style='List Bullet')
+
+            else:
+                p = document.add_paragraph(content["text_1"])
+    
+            if("img" in content):
+                document.add_picture(content["img"], width=Inches(5))
+                
+            if("text_2" in content):
+                if(type(content["text_2"])==dict):
+                    p = document.add_paragraph("")
+                    if("italic" in content["text_2"]["type"]):
+                        p.add_run(content["text_2"]["text"]).italic = True
+                    if("bold" in content["text_2"]["type"]):
+                        p.add_run(content["text_2"]["text"]).bold = True
+                elif(type(content["text_1"])==list):
+                    for t in content["text_1"]:
+                        p=document.add_paragraph(t, style='List Bullet')
+                else:
+                    p = document.add_paragraph(content["text_2"])
+
+            document.save(file_name)
+        
 class autoReport:
     """Class to create an analyse docx after graph analyse : neuds distributed in class and size.
 
@@ -96,7 +168,9 @@ class autoReport:
         :param str edges_csv: path and edges file
         :param dict classes_param: {class ID:color} color compatible with matplotlib : https://matplotlib.org/stable/gallery/color/named_colors.html
         :param dict account: {name:<str>, at:<str>, description:<str>}
-
+        
+        :param str tweets_path: tweets path of a json (kwargs default None)
+        
         :param str desc_col_name: name of the description column nodes.csv (kwargs default "description")
         :param dict id_col_name: name of the id column nodes.csv (kwargs default "Id")
         :param str class_col_name: name of the class column nodes.csv (kwargs default "modularity_class")
@@ -105,6 +179,7 @@ class autoReport:
         :param dict at_col_name: name of the @ account column nodes.csv (kwargs default "screen_name")
         :param str source_col_name: name of the source column in edges.csv (kwargs default "Source")
         :param dict target_col_name: name of the target column in edges.csv (kwargs default "Target")
+        :param str path_out: name of the out folder (kwargs default temp)
         """
         self.target_account=account
         self.classes=classes_param
@@ -125,6 +200,75 @@ class autoReport:
         self.edge=pd.read_csv(self.file_edges_csv).loc[:, [self._source_col_name, self._target_col_name]]
         self.nb_nodes= len(self.node)
         
+        # out path 
+        self.out_path=kwargs.get("path_out","./temp/")
+        if(self.out_path[-1]!='/'):
+            self.out_path+='/'
+        if not os.path.exists(self.out_path):
+            os.makedirs(self.out_path)
+            
+        #vérifie les classes
+        verif={key:False for key in self.classes}
+        i=0
+        while sum([v for _,v in verif.items()])!=len(verif) and i<len(self.node)-1:
+            class_=self.node.loc[i, self._class_col_name]
+            if(class_ in verif):
+                verif[self.node.loc[i, self._class_col_name]]=True
+            i+=1
+            
+        if(sum([v for _,v in verif.items()])!=len(verif)):
+            raise Exception(f"classes {[v for v,a in verif.items() if not a]} have no nodes")
+        
+        #tweet to dataframe
+        self._tweets=kwargs.get("tweets_path",None)
+        self._df_tweets=None
+        
+        if self._tweets:
+            L=[]
+            for t in json.load(open(self._tweets, "r")):
+
+                inter = "response" if "in_reply_to_screen_name" in t else "tweet"
+                if("quoted_status" in t):
+                    inter ="rt" 
+
+                L.append({
+                    "created_at":datetime.datetime.fromtimestamp(dateTwitter2Timestamp(t["created_at"])).isoformat(),
+                    "text": t["full_text"] if "full_text" in t else t["text"],
+                    "user_screen_name":t["user"]["screen_name"],
+                    "user_id":t["user"]["id_str"],
+                    self._class_col_name:self.node[self.node["Id"] == t["user"]["id"]]["modularity_class"].tolist()[0] if not self.node[self.node["Id"] == t["user"]["id"]].empty else None,
+                    "interaction":inter,
+                    "language":t["metadata"]["iso_language_code"]
+                })
+            self._df_tweets=pd.DataFrame(L)
+    
+    def pieGraph(self,file_name, datas, title):
+        """
+        """
+        plt.clf() 
+        data=[v/sum(list(datas.values())) for v in datas.values()]
+        nData=[]
+        nLabel=[]
+        if(len(datas)>3):
+            other=0
+            for d,lab in zip(data, list(datas.keys())):
+                if(d<0.01):
+                    other+=d
+                else:
+                    nData.append(d)
+                    nLabel.append(lab)
+            if(other!=0):
+                nData.append(other)
+                nLabel.append("other")
+
+        else:
+            nData=data
+            nLabel=list(datas.keys())
+
+        plt.pie(nData, labels = nLabel) 
+        plt.title(title)
+        plt.savefig(file_name, bbox_inches = 'tight')
+
     def class_distribution(self, file_name:str)->list:
         """
         Create a image file with a graph bar to show class distribution
@@ -174,29 +318,33 @@ class autoReport:
         plt.savefig(file_name, bbox_inches = 'tight')
         plt.clf() #clear graph
     
-    def most_common_words_class(self,file_name:str, key_class, nb_words:int, min_len_word:int):
-        """
-        Create a graph file with all most common words on followers description depending of their class
-
+    def most_commun_words_by_class(self, file_name:str, sentences_list:list, nb_words:int, min_len_word:int, title:str=None, color:str="blue", **kwargs):
+        """Create a bar graph with a words list for a single class; use for classes descriptions and tweets
+        
         :param str file_name: name of the saving image (.png, .jpg...)
-        :param all key_class: key class : must be a key to classes_param
+        :param list<str> sentences_list: list for sentences
         :param int nb_words: number of the most common words to be displayed on the graph
         :param int min_len_word: minimum size of the words to be taken into consideration look :func:`most_commun_word`
+        :param str color: graph color default blue
+        :param list<str> kwargs/words_notIncluded: words not included in the graph default ['https']
+        :param str kwargs/title: graph title default f"The {len(L_)} most common word in {color} class"
         """
         plt.clf() #clear graph
-        rslt_df = self.node[self.node[self._class_col_name] == key_class]
-        L_phrase=processListSentences(rslt_df.loc[:,self._desc_col_name].tolist())
-        countL=most_commun_word(L_phrase, min_len_word, True)
-        if("https" in countL):
-            countL.pop("https")
+        #rslt_df = self.node[self.node[self._class_col_name] == key_class]
+        countL=most_commun_word(processListSentences(sentences_list), min_len_word, True)
+        for w in kwargs.get("words_notIncluded", ['https']):
+            if(w in countL):
+                countL.pop(w)
             
         L_=countL.most_common(nb_words)
         
-        plt.bar([k for k, _ in L_], [val/len(L_phrase) for _, val in L_], width=1, color=self.classes[key_class]) #sum([val for _,val in L_])
+        plt.bar([k for k, _ in L_], [val/len(sentences_list) for _, val in L_], width=1, color=color) #sum([val for _,val in L_])
         plt.xticks(rotation=45)
-        plt.title(f"The {len(L_)} most common word in {self.classes[key_class]} class") #  {sum([val for k,val in class_ if k==key])/sum([val for _,val in class_])*100 :0.1f}%
+
+        #  {sum([val for k,val in class_ if k==key])/sum([val for _,val in class_])*100 :0.1f}%
+        plt.title(kwargs.get("title", f"The {len(L_)} most common word in {color} class"))
         plt.savefig(file_name, bbox_inches = 'tight')
-    
+        
     def similarity_descriptions(self, file_name:str, similarity_fct):
         """
         Create a boxplot graph with similarity/distance between account target description and follower description; depending of their class
@@ -223,7 +371,7 @@ class autoReport:
         ax.set_xlabel(f"class")
         plt.savefig(file_name, bbox_inches = 'tight')
     
-    def links_between_class(self, file_name:str, percentage:float=1,node_weigth:list=None,logs:bool=True):
+    def links_between_class(self, file_name:str, percentage:float=1,node_weigth:list=None,logs:bool=True, **kwargs):
         """
         Create a node graph to resume the global graph, show all edges between classes
         This function can take time !
@@ -232,6 +380,9 @@ class autoReport:
         :param float percentage: must be in ]0,1], percentage of edge taken into consideration (in ordre of edges.csv) (default 1)
         :param list<float> node_weigth: same length as number of classes, weight of nodes, If None all nodes have the same weight (default None)
         :param bool logs: if plot some logs to show the progress (default True)
+        :param bool show_internal_link: if true, draw an edge from the node to the same node (default False)
+        :param tuple<float> edge_size: (min, max) edge size (default (15,7))
+        :param tuple<float> node_size: (min, max) edge size (default (40,10))
         """
         if(node_weigth is None):
             node_weigth=[1 for k in self.classes.keys()]
@@ -240,14 +391,15 @@ class autoReport:
         id_={}
         A=[]
         i=0
-        G=[]
+        G_edges=[]
         for i0,key_s in enumerate(self.classes.keys()):
             for j0,key_t in enumerate(self.classes.keys()):
-                if(key_s != key_t):
+                if(key_s != key_t or kwargs.get("show_internal_link", False)):
                     A.append({"Source":key_s, "Target":key_t, "Weight":0})
                     id_[(key_s, key_t)]=i
                     i+=1
-                    G.append((i0,j0))
+                    G_edges.append((i0,j0))
+
         df_classe_edge=pd.DataFrame(A)
         
         N=int(len(self.edge)*min(percentage, 1))
@@ -263,9 +415,10 @@ class autoReport:
             key_t=self.edge[self._target_col_name].iloc[i]
             classe_s=self.node[self.node[self._id_col_name] == key_s][self._class_col_name].iloc[0]
             classe_t=self.node[self.node[self._id_col_name] == key_t][self._class_col_name].iloc[0]
+
             if((classe_s, classe_t) in id_.keys()):
                 df_classe_edge.loc[id_[(classe_s, classe_t)], "Weight"]+=1
-        
+            
         g = igraph.Graph(directed=True)
         g.add_vertices(len(self.classes))
 
@@ -273,34 +426,45 @@ class autoReport:
             g.vs[i]["id"]= key
             g.vs[i]["label"]= "" #dictcolors[key][0]
             g.vs[i]["color"] = self.classes[key]
-
-        H=[]
-        W=[]
-        seuil=1
-        for i,g_ in enumerate(G):
-            if(df_classe_edge.loc[i, "Weight"]>seuil):
-                H.append(g_)
-                W.append(df_classe_edge.loc[i, "Weight"])
-        g.add_edges(H)
-        g.es['width'] = [(w-min(W))/max(W)*15+3 for w in W]
         
+        edges_size=[df_classe_edge.loc[i, "Weight"] for i in range(len(G_edges))]
+        g.add_edges(G_edges)
+        
+        max_edge_size,min_edge_size=kwargs.get("edge_size", (15,6)) 
+         
+        if(min(edges_size)!=max(edges_size)):
+            g.es['width'] = [((a-min(edges_size))/(max(edges_size)-min(edges_size)))*(max_edge_size-min_edge_size)+min_edge_size for a in edges_size] #
+        else:
+            g.es['width'] = [(w-min(edges_size))/max(edges_size)*max_edge_size+min_edge_size for w in edges_size] #[((a-min(node_weigth))/(max(node_weigth)-min(node_weigth)))*(max_vex_size-min_vex_size)+min_vex_size for a in node_weigth] #
+        
+
         visual_style = {}
-        # Set bbox and margin
-        visual_style["bbox"] = (400,400)
-        visual_style["margin"] = 27
-        # Set vertex colours
-        #visual_style["vertex_color"] = 'white'
-        # Set vertex size
-        visual_style["vertex_size"] = [50*l/max(node_weigth) for l in node_weigth]
-        # Set vertex lable size
+        visual_style["bbox"] = (500,500)
+        visual_style["margin"] = 50 #27
+
+        max_node_size,min_node_size=kwargs.get("node_size", (40,10))  
+        visual_style["vertex_size"] = [((a-min(node_weigth))/(max(node_weigth)-min(node_weigth)))*(max_node_size-min_node_size)+min_node_size for a in node_weigth]
+        
         visual_style["vertex_label_size"] = 22
-        visual_style["edge_curved"] = [0.1 for i in range(len(H))]
+        visual_style["edge_curved"] = [0.1 for i in range(len(G_edges))]
+        visual_style["edge_color"] =[self.classes[df_classe_edge.loc[i, "Source"]] for i in range(len(G_edges))]
 
         #igraph.plot(g, target=ax,**visual_style, edge_arrow_size= 1, directed = True)
         #plt.axis('off')
         #plt.savefig(file_name,bbox_inches = 'tight')
         out=igraph.plot(g,**visual_style, edge_arrow_size= 1, directed = True)
         out.save(file_name)
+
+    def mostInfluentialUsersbyClass(self,file_name):
+        infuence= {key:sum(self.node[self.node[self._class_col_name] == key][self._rank_col_name]) for key in self.classes.keys()}
+        plt.clf() #clear graph
+
+        plt.bar(list(self.classes.values()), [val/sum(list(infuence.values())) for _, val in infuence.items()], width=1, color=list(self.classes.values())) #sum([val for _,val in L_])
+        plt.xticks(rotation=45)
+
+        #  {sum([val for k,val in class_ if k==key])/sum([val for _,val in class_])*100 :0.1f}%
+        plt.title("")
+        plt.savefig(file_name, bbox_inches = 'tight')
 
     def makeReport(self,file_name, logs=True, **kwargs):
         """
@@ -312,12 +476,15 @@ class autoReport:
         :param int nb_words_class: number of the most common words by class to be displayed on the graph (kwargs default 10)
         :param int min_len_word: minimum size of the words to be taken into consideration (kwargs default 5)
         :param int per_edeges: must be in ]0,1], percentage of edges taken into consideration (kwargs default 1)
+        :param bool show_internal_link: if true, draw an edge from the node to the same node (default False)
+        :param tuple<float> edge_size: (min, max) edge size (default (15,7))
+        :param tuple<float> node_size: (min, max) edge size (default (40,10))
         """
-        file_class_distribution=f"class_distribution_{self.target_account['at']}.png"
-        file_most_common_words_tot=f"most_common_words_tot_{self.target_account['at']}.png"
-        file_most_common_words_class={key:f"most_common_words_{self.classes[key]}_{self.target_account['at']}.png" for key in self.classes.keys()}
-        file_similarity_descriptions=f"similarity_descriptions_{self.target_account['at']}.png"
-        file_links_between_class=f"links_between_class_{self.target_account['at']}.png"
+        file_class_distribution=self.out_path+f"class_distribution_{self.target_account['at']}.png"
+        file_most_common_words_tot=self.out_path+f"most_common_words_tot_{self.target_account['at']}.png"
+        file_most_common_words_class={key:self.out_path+f"most_common_words_{self.classes[key]}_{self.target_account['at']}.png" for key in self.classes.keys()}
+        file_similarity_descriptions=self.out_path+f"similarity_descriptions_{self.target_account['at']}.png"
+        file_links_between_class=self.out_path+f"links_between_class_{self.target_account['at']}.png"
         
         if(logs):
             print(f"starting {self.target_account['at']} report...")
@@ -332,13 +499,25 @@ class autoReport:
             
         self.most_common_words_tot(file_most_common_words_tot, nb_words=15, min_len_word=5)
         
+        #############################################
+        #  most common words in the description of the users by class
+        #############################################
+        
         nb_words_class=kwargs.get("nb_words_class",10)
         
         if(logs):
             print(f"3st step : most {nb_words_class} common words by class with letters>={min_len_word}")
             
         for key in self.classes.keys():
-            self.most_common_words_class(file_most_common_words_class[key],key_class=key, nb_words=nb_words_class, min_len_word=5)
+            rslt_df = self.node[self.node[self._class_col_name] == key]
+            L_phrase=processListSentences(rslt_df.loc[:,self._desc_col_name].tolist())
+            self.most_commun_words_by_class(file_most_common_words_class[key], L_phrase, nb_words_class, min_len_word=5, color=self.classes[key])
+        
+            #self.most_common_words_class(file_most_common_words_class[key],key_class=key, nb_words=nb_words_class, min_len_word=5)
+        
+        ##############################################
+        # similarity of users descriptions
+        #############################################
         
         if(logs):
             print(f"4st step : similarity of descriptions")
@@ -348,150 +527,108 @@ class autoReport:
         if(logs):
             print(f"5st step : links between class /!\ It takes time !")
             
-        self.links_between_class(file_links_between_class, percentage=kwargs.get("per_edeges",1), node_weigth=pour_classe, logs=logs)
+        self.links_between_class(file_links_between_class, percentage=kwargs.get("per_edeges",1), 
+                                    node_weigth=pour_classe, logs=logs, 
+                                    show_internal_link=kwargs.get("show_internal_link", False),
+                                    node_size=kwargs.get("node_size", (40,10)),
+                                    edge_size=kwargs.get("edge_size", (15,7)))
         
         most_influential_accounts=[]
         for key in self.classes.keys():
             rslt_df = self.node[self.node[self._class_col_name] == key].sort_values(by=[self._rank_col_name], ascending=False)
             R=[]
             for i in range(min(len(rslt_df),10)):
-                R.append({"name":rslt_df[self._name_col_name].iloc[i],
-                          "at":"@"+rslt_df[self._at_col_name].iloc[i],
-                          "description":rslt_df[self._desc_col_name].iloc[i]
+                R.append({"name":str(rslt_df[self._name_col_name].iloc[i]),
+                          "at":"@"+str(rslt_df[self._at_col_name].iloc[i]),
+                          "description":str(rslt_df[self._desc_col_name].iloc[i])
                          })
             most_influential_accounts.append(R)
-            
-        self.writeDoc(file_name,target_account=self.target_account['name'], 
-                target_account_at=self.target_account['at'],
-                account_description=self.target_account['description'],
-                number_classes=len(self.classes),
-                file_class_distribution=file_class_distribution,
-                file_most_commun_words_tot=file_most_common_words_tot,
-                file_most_commun_words_classe=list(file_most_common_words_class.values()),
-                most_commun_words_classe=10,
-                most_commun_words_tot=15 , 
-                      
-                file_links_between_class=file_links_between_class,
-                file_similarity_descriptions=file_similarity_descriptions,
-                color_classe=list(self.classes.values()),
-                pour_classe=[p*100 for p in pour_classe],
+        
+        ###
+        # on somme les pages rank et on voit le résultat
+        ##
+        file_mostInfluentialUsersbyClass=self.out_path+f"file_mostInfluentialUsersbyClass_{self.target_account['at']}.png"
+        self.mostInfluentialUsersbyClass(file_mostInfluentialUsersbyClass)
+        
+        ################
+        # Tweet analyse
+        ################
+        content_class=[]
+        for i, (key,color) in enumerate(self.classes.items()): 
+            L={"title":{f"Class {color} ({pour_classe[i]*100 : .1f}%)"},
+               "text_1":""}
+            K=[{"title":f"Most {nb_words_class} common words",
+               "text_1":f"We only check for words with more than {min_len_word} characters",
+                "img":file_most_common_words_class[key]},
+                {"title":"Most influential accounts",
+                "text_1":[f"{acc['name']} ({acc['at']}) : «{acc['description']}» " for acc in most_influential_accounts[i]]
+                }
+            ]
+            if(self._tweets):
+                #most_common_words in tweet by _class 
+                rslt_df = self._df_tweets[self._df_tweets[self._class_col_name] == key]
+                L_phrase=processListSentences(rslt_df.loc[:,"text"].tolist())
+                self.most_commun_words_by_class(self.out_path+f"tweet_{key}.png", L_phrase, 10, min_len_word=5, color=color, title=f"The {10} most common word in tweets of {color} class")
+                
+                mini=min([datetime.datetime.fromisoformat(d) for d in rslt_df.loc[:,"created_at"]])
+                maxi=max([datetime.datetime.fromisoformat(d) for d in rslt_df.loc[:,"created_at"]])
 
-                most_influential_accounts=most_influential_accounts #[[{"name":"jp", "at":"@jp", "description":"bla"},{"name":"jp", "at":"@jp", "description":"bla"}]]
-                )
+                K.append({"title":"Most commun words in tweets",
+                          "text_1":{"text":f"{len(L_phrase)} tweets between {mini} and {maxi} UTC", "type":["italic"]},
+                          "img":self.out_path+f"tweet_{key}.png"})
+
+                ##3 comptes ayant tweeté le plus
+                users_t=collections.Counter(rslt_df.loc[:,"user_id"].tolist()).most_common(3)
+                K.append({"title":"Users who tweeted the most",
+                          "text_1":[f"""@{self.node[self.node['Id'] == int(user_id)]['screen_name'].tolist()[0] if not self.node[self.node['Id'] == int(user_id)].empty else None} «{self.node[self.node['Id'] == int(user_id)]['description'].tolist()[0] if not self.node[self.node['Id'] == int(user_id)].empty else None}» tweet {time} time""" for user_id,time in users_t]})
+
+            content_class.append([L, K])
+
+        content=[
+            {"title":f'Analysis of {self.target_account["name"]} ({self.target_account["at"]})\'s Graph',"text_1":''},
+            [
+                {"title":"Introduction", "text_1":{"text":"<insert a comment about #Bucha>", "type":["italic"]}, "text_2":"On the document below, we will first see a global analysis, and a comparative analysis of the class, then we will see in each class the most influential accounts"},
+                [
+                    {"title":"Class distribution", 
+                    "text_1":f"All individuals are placed into one of {len(self.classes)} class :",
+                    "img":file_class_distribution},
+                    {"title":"Links between class", 
+                    "text_1":f"The most interesting analysis for the comparison between the class, is to show links between class.",
+                    "img":file_links_between_class,
+                    "text_2":{"text":"All accounts of a class are merged to a sigle node and we see that the links that leave the class \n <insert a comment about this graph>", "type":["italic"]}},
+                    {"title":"Most common words in descriptions", 
+                    "text_1":f"For an initial understanding, the target's graph, we can see the {nb_words} most commun words on follower's descriptions spread on each classe",
+                    "img":file_most_common_words_tot},
+                    {"title":"Similarity of descriptions", 
+                    "text_1":f"Similarity between the follower's description and the description of {self.target_account['name']} \n {self.target_account['description']}",
+                    "img":file_similarity_descriptions,
+                    "text_2":f"Warning: This methode use only the similarity between {self.target_account['name']}'s description and follower's description, and not the meaning of the description"}
+                ],
+                {"title":"Class analysis","text_1":""},
+                content_class,
+                [{"title":"other analyses","text_1":""},
+                    [{"title":"Distribution of the most influential users by class",
+                    "text_1":"With the sum of the page rank, we can estimate the influence of the classes.",
+                    "img":file_mostInfluentialUsersbyClass},
+                    ]
+                ]
+            ]
+        ]
+        if(self._tweets):
+            self.pieGraph(self.out_path+f"tweet_interaction.png", collections.Counter(self._df_tweets["interaction"].tolist()), "type of tweet interaction")
+            content[-1][-1][-1].append({"title":"type of tweet interaction",
+                    "text_1":"type of tweet interaction",
+                    "img":self.out_path+f"tweet_interaction.png"
+            })
+
+            self.pieGraph(self.out_path+f"tweet_langage.png", collections.Counter(self._df_tweets["language"].tolist()), "language of the tweets")
+            content[-1][-1][-1].append({"title":"language of the tweets",
+                    "text_1":"language of the tweets",
+                    "img":self.out_path+f"tweet_langage.png"
+            })
+
+        writeDoc(file_name, content)
     
-    def writeDoc(self,file_name, **kwargs):
-        """
-        write a report in docx
-
-        :param str file_name: name of the doc (.docx)
-        :param str target_account: name of the target account (kwargs default Nan)
-        :param str target_account_at: at@ of the target account (kwargs default @Nan)
-        :param str account_description: account description (kwargs default "")
-
-        :param str number_classes: number of all classes (kwargs default )
-        :param list<str> color_classe: color classe (kwargs default [])
-        :param list<float> pour_classe: pourcentage of nodes in classe (kwargs default [])
-
-        :param str file_class_distribution: file where is the graph class distribution graph (kwargs default "")
-        :param str file_most_commun_words_tot: file where is the graph class most commun words total (kwargs default "")
-        :param list<str> str file_most_commun_words_classe: files where is graphs most commun words by class (kwargs default "")
-        :param str file_similarity_descriptions: file where is the graph similarity descriptions (kwargs default "")
-        :param str file_links_between_class: file where is the graph links between class (kwargs default "")
-        
-        :param int most_commun_words_tot: number of most commun words total (kwargs default )
-        :param int most_commun_words_classe: number of most commun words by class (kwargs default )
-
-        :param list<list<dict>> most_influential_accounts: [[{"name":"", "at":"@", "description":""}]] (kwargs default )
-        """
-        target_account=kwargs.get("target_account", "Nan")
-        target_account_at=kwargs.get("target_account_at", "@Nan")
-        number_classes=kwargs.get("number_classes", 1)
-        file_class_distribution=kwargs.get("file_class_distribution", "graph.png")
-        
-        most_commun_words_tot=kwargs.get("most_commun_words_tot", 10)
-        file_most_commun_words_tot=kwargs.get("file_most_commun_words_tot", "graph.png")
-        file_links_between_class=kwargs.get("file_links_between_class", "graph.png")
-        file_similarity_descriptions=kwargs.get("file_similarity_descriptions", "graph.png")
-        account_description=kwargs.get("account_description", "super account_description")
-        
-        most_commun_words_classe=kwargs.get("most_commun_words_classe", 10)
-        file_most_commun_words_classe=kwargs.get("file_most_commun_words_classe", ["graph.png"])
-
-        color_classe=kwargs.get("color_classe", ["red"])
-        pour_classe=kwargs.get("pour_classe", [10])
-
-        most_influential_accounts=kwargs.get("most_influential_accounts", [[{"name":"jp", "at":"@jp", "description":"bla"},{"name":"jp", "at":"@jp", "description":"bla"}]])
-
-
-        document = Document()
-
-        document.add_heading(f'Analysis of {target_account} ({target_account_at})\'s Graph', 0)
-
-        document.add_heading('Introduction', level=1)
-
-        p = document.add_paragraph('')
-        p.add_run(f'<insert a comment about {target_account}>').italic = True
-
-        p = document.add_paragraph("""On the document below, we will first see a global analysis, and a comparative analysis of the class, then we will see in each class the most influential accounts""")
-
-
-        ##_______
-
-        document.add_heading('Class distribution', level=2)
-        p = document.add_paragraph(f'All individuals are placed into one of {number_classes} class :')
-
-        document.add_picture(file_class_distribution, width=Inches(5))
-
-        ##_______
-
-        document.add_heading('Links between class', level=2)
-        p = document.add_paragraph(f"The most interesting analysis for the comparison between the class, is to show links between class.")
-        p = document.add_paragraph(f"")
-        p.add_run(f'All accounts of a class are merged to a sigle node and we see that the links that leave the class').italic = True
-
-        document.add_picture(file_links_between_class, width=Inches(5))
-
-        p = document.add_paragraph(f"")
-        p.add_run(f'<insert a comment about this graph>').italic = True
-
-        ##_______
-
-        document.add_heading('Most common words', level=2)
-        p = document.add_paragraph(f"For an initial understanding, the target's graph, we can see the {most_commun_words_tot} most commun words on follower's descriptions spread on each classe")
-
-        document.add_picture(file_most_commun_words_tot, width=Inches(5))
-
-        p = document.add_paragraph(f"")
-        p.add_run(f'<insert a comment about this graph>').italic = True
-
-        ##_______
-
-        document.add_heading('Similarity of descriptions', level=2)
-        p = document.add_paragraph(f"Similarity between the follower's description and the description of {target_account}.")
-        document.add_paragraph(account_description, style='Intense Quote')
-
-        document.add_picture(file_similarity_descriptions, width=Inches(5))
-
-        document.add_paragraph(f"This methode use only the similarity between {target_account}'s description and follower's description, and not the meaning of the description")
-
-        p = document.add_paragraph(f"")
-        p.add_run(f'<insert a comment about this graph>').italic = True
-
-        document.add_heading('Class analysis', level=1)
-        for i in range(number_classes):
-            document.add_heading(f'Class {color_classe[i]} ({pour_classe[i] : .1f}%)', level=2)
-
-            document.add_heading(f'Most {most_commun_words_classe} common words', level=3)
-            document.add_paragraph(f"We only check for words with more than 5 characters")
-            document.add_picture(file_most_commun_words_classe[i], width=Inches(5))
-
-            document.add_heading(f'Most influential accounts', level=3)
-            #p=document.add_paragraph("", style='List Number')
-            for k in range(len(most_influential_accounts[i])):
-                p=document.add_paragraph(f"{most_influential_accounts[i][k]['name']} ({most_influential_accounts[i][k]['at']}) : «{most_influential_accounts[i][k]['description']}» ", style='List Bullet')
-
-        document.save(file_name)
-
 if __name__ == '__main__':
     r=autoReport("nodes.csv", "edges.csv", {2339:"magenta", 2433:"limegreen", 2566:"deepskyblue", 1052:"saddlebrown", 2498:"darkorange", 1583:"red"}, 
            {"name":"Antoine Bondaz", "at":"@AntoineBondaz", "description":"""Foodie - 🕵🏼‍Research @FRS_org - 👨🏼‍🏫 Teach @SciencesPo - 🇨🇳🇹🇼🇰🇷🇰🇵's foreign & security policies - Ph.D."""})

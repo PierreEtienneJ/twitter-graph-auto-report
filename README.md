@@ -39,12 +39,20 @@ autoReport("nodes.csv", "edges.csv",
             1583:"red"}, 
            {"name":"Antoine Bondaz", 
            "at":"@AntoineBondaz",
-            "description":"""Foodie - 🕵🏼‍Research @FRS_org - 👨🏼‍🏫 Teach @SciencesPo - 🇨🇳🇹🇼🇰🇷🇰🇵's foreign & security policies - Ph.D."""}
-        ).makeReport("out.docx")
+            "description":"""Foodie - 🕵🏼‍Research @FRS_org - 👨🏼‍🏫 Teach @SciencesPo - 🇨🇳🇹🇼🇰🇷🇰🇵's foreign & security policies - Ph.D."""},
+            rank_col_name="pageranks",
+            class_col_name="modularity_class",
+        ).makeReport("out.docx",
+                      per_edeges=1,
+                      show_internal_link=False)
 
 ```
 
-Creates a report _out.dox_ for Antoine Bondaz, with 6 class. nodes.csv have two columns : one with the rank of the nodes (default **pageranks**) and one with class (default **modularity_class**). If columns have special name, specify the argument class_col_name for class columns name and rank_col_name for rank column name in the construct.
+Creates a report _out.docx_ for Antoine Bondaz, with 6 class. nodes.csv have two columns : one with the rank of the nodes (default **pageranks**) and one with class (default **modularity_class**). If columns have special name, specify the argument class_col_name for class columns name and rank_col_name for rank column name in the construct.
+
+### Advice
+    - If your graph comes from the tweets search, you can add the tweets.json file with the tweets_path parameter (on the constructor) to have more graphics.
+    - To test quickly, you can add the per_edeges=0.1 parameter (to the makeReport method) to test the link graph with 10% of edges. Important to verify the correct installation of igraph
 
 ## The report
 
