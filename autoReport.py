@@ -156,7 +156,20 @@ def writeDoc(file_name, file_content, previusDoc=False, deg_title=0):
                     p = document.add_paragraph(content["text_2"])
 
             document.save(file_name)
-        
+
+def addInDegree(df_nodes:pd.DataFrame(), df_edges:pd.DataFrame(), name_target="Target", name_id="Id"):
+    """ create the column InDegree in df_nodes with df_edges
+    :param pd.DataFrame() df_nodes: nodes dataframe
+    :param pd.DataFrame() df_edges: edges dataframe
+    :param str name_target: 
+    :return: new nodes dataframe
+    :rType: pd.DataFrame()
+    """
+    df_nodes_=df_nodes.copy()
+    col=collections.Counter(df_edges.loc[:,name_target].tolist())
+    df_nodes_["InDegree"]=[col[id_] for id_ in df_nodes[name_id].tolist()]
+    return df_nodes_
+
 class autoReport:
     """Class to create an analyse docx after graph analyse : neuds distributed in class and size.
 
@@ -174,7 +187,7 @@ class autoReport:
         :param str desc_col_name: name of the description column nodes.csv (kwargs default "description")
         :param dict id_col_name: name of the id column nodes.csv (kwargs default "Id")
         :param str class_col_name: name of the class column nodes.csv (kwargs default "modularity_class")
-        :param dict rank_col_name: name of the rank column nodes.csv (kwargs default "pageranks")
+        :param dict rank_col_name: name of the rank column nodes.csv (kwargs default "pageranks") if rank_col_name==InDegree and not in node's columns, create this column
         :param str name_col_name: name of the name account column nodes.csv (kwargs default "name")
         :param dict at_col_name: name of the @ account column nodes.csv (kwargs default "screen_name")
         :param str source_col_name: name of the source column in edges.csv (kwargs default "Source")
@@ -196,8 +209,14 @@ class autoReport:
         self._source_col_name= kwargs.get("source_col_name","Source")
         self._target_col_name=kwargs.get("target_col_name","Target")
         
-        self.node=pd.read_csv(self.file_nodes_csv).loc[:, [self._id_col_name, self._name_col_name,self._at_col_name, self._desc_col_name, self._class_col_name,self._rank_col_name]]
         self.edge=pd.read_csv(self.file_edges_csv).loc[:, [self._source_col_name, self._target_col_name]]
+
+        df_nodes=pd.read_csv(self.file_nodes_csv)
+        if(self._rank_col_name=="InDegree" and self._rank_col_name not in df_nodes.columns):
+            df_nodes=addInDegree(df_nodes, self.edge, self._target_col_name,self._id_col_name)
+        
+        self.node=df_nodes.loc[:, [self._id_col_name, self._name_col_name,self._at_col_name, self._desc_col_name, self._class_col_name,self._rank_col_name]]
+        
         self.nb_nodes= len(self.node)
         
         # out path 
@@ -241,6 +260,8 @@ class autoReport:
                     "language":t["metadata"]["iso_language_code"]
                 })
             self._df_tweets=pd.DataFrame(L)
+
+
     
     def pieGraph(self,file_name, datas, title):
         """

@@ -54,6 +54,8 @@ Creates a report _out.docx_ for Antoine Bondaz, with 6 class. nodes.csv have two
     - If your graph comes from the tweets search, you can add the tweets.json file with the tweets_path parameter (on the constructor) to have more graphics.
     - To test quickly, you can add the per_edeges=0.1 parameter (to the makeReport method) to test the link graph with 10% of edges. Important to verify the correct installation of igraph
 
+If the size of the nodes is calculated with In-Degree and In-Degree is not in the columns of the csv nodes, you can specify `InDegree` for the `rank_col_name` parameter, it will calculate it.
+
 ## The report
 
 The report is divided into 2 parts: the first one looks at the whole graph, the second one at each class.
